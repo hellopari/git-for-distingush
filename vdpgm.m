@@ -1,4 +1,4 @@
-function [results] = vdpgm(given_data,label,opts)
+function [results] = vdpgm(given_data,opts)
 start_time = clock;
 if nargin == 1
   opts = struct();
@@ -90,9 +90,10 @@ if strcmp(opts.algorithm,'vdp')
     assert(max(sum(power(data.given_data',2),2))<1+exp(-20));
     opts.max_kk = round(size(data.given_data',2)/2); 
     while isfinite(besseli(size(data.given_data',2)/2,opts.max_kk+10))
-        opts.max_kk = opts.max_kk+10;
+        opts.max_kk = opts.max_kk+40;
     end
-    extra_V.kk = [70,70];
+     % extra_V.kk = [250,140];
+   extra_V.kk = [400,100];
     extra_V.ln_kk = psi(hp_prior.a)-log(hp_prior.b);
     extra_V.kk_approx=extra_V.kk-(hp_prior.a>1)*(1./hp_prior.b);
 
@@ -108,11 +109,11 @@ end
 
 [hp_posterior,extra_V] = mk_hp_posterior(data, r, hp_prior, opts,extra_V);
 if opts.do_greedy
-  [free_energy, hp_posterior, data,new_extra_V] = greedy(data, hp_posterior, hp_prior, opts,extra_V,label);
+  [free_energy, hp_posterior, data,new_extra_V] = greedy(data, hp_posterior, hp_prior, opts,extra_V);
 else
   [free_energy, hp_posterior, data] = split_merge(data, hp_posterior, hp_prior, opts);
 end
-kk=hp_posterior.a./hp_posterior.b;
+
 results.algorithm = opts.algorithm;
 results.elapsed_time = etime(clock, start_time);
 results.free_energy = free_energy;
@@ -122,35 +123,23 @@ results.K = length(hp_posterior.beta);
 results.opts = opts;
 
 
-Y = label;
 cluster=1:size(hp_posterior.mu,2);
 t1=mk_map_log_p_of_x_given_c(given_data, cluster, hp_posterior, opts,new_extra_V);
 [~,Y_pred] = max(t1',[],2);
-
- [FMeasure,Accuracy] = Fmeasure(Y', Y_pred')
-%  Nmi=nmi(Y', Y_pred')
- results.K-1;
-if opts.get_r
-  results.r = mk_r(data, hp_posterior, hp_prior, opts);
-  if opts.use_kd_tree
-    results.r = mk_non_kdtree_r(data, results.r);
-  end
-end
-if opts.get_log_likelihood
-  results.log_likelihood = mk_log_likelihood(data, hp_posterior, hp_prior, opts);
-end
-
-
+X=given_data';
+save('Y_pred_yeast_fast_vmfmm.mat','Y_pred');
+ s=silhouette(X, Y_pred);
+  si=mean(s)
 
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-function [free_energy, hp_posterior, data,extra_V] = greedy(data, hp_posterior, hp_prior, opts,extra_V,label);
+function [free_energy, hp_posterior, data,extra_V] = greedy(data, hp_posterior, hp_prior, opts,extra_V);
 free_energy= mk_free_energy(data, hp_posterior, hp_prior, opts,extra_V);
 disp_status(free_energy, hp_posterior, opts);
 while 1
   disp('finding the best one....')
-  [new_free_energy, new_hp_posterior, new_data, c,new_extra_V] = find_best_splitting(data, ...
+  [new_free_energy, new_hp_posterior, new_data, c,extra_V] = find_best_splitting(data, ...
                                                     hp_posterior, ...
                                                     hp_prior, opts,extra_V);
   if c == -1
@@ -162,7 +151,7 @@ while 1
   disp_status(new_free_energy, new_hp_posterior, opts);
 
   [new_free_energy, new_hp_posterior, new_data,~,new_extra_V] = update_posterior2(new_data, ...
-                                                    new_hp_posterior,new_extra_V, ...
+                                                    new_hp_posterior,extra_V, ...
                                                     hp_prior, opts, 1, opts.ite);
 
 
@@ -171,8 +160,6 @@ while 1
      break
   end
 
-  
-      
   free_energy = new_free_energy;
   hp_posterior = new_hp_posterior;
   extra_V=new_extra_V;
@@ -207,10 +194,8 @@ for c = candidates(1:min(c_max, length(candidates)))
   [new_data(c), new_r,new_extra_V, info] = split(c, data, r, hp_posterior, hp_prior, opts,extra_V, 1);
   %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   new_c = info.new_c;
-  if new_c==0
-       continue
-  end
-  relating_n = find(sum(new_r(:,[c new_c]),2) > 0.5);
+
+  relating_n = find(sum(new_r(:,[c new_c]),2) >0.5);
   if isempty(relating_n)
     continue
   end
@@ -226,7 +211,7 @@ for c = candidates(1:min(c_max, length(candidates)))
   [sub_hp_posteior,sub_extra_V] = mk_hp_posterior(sub_data, sub_r, hp_prior, opts,sub_extra_V);
   [sub_f, sub_hp_posteior, dummy, sub_r,sub_extra_V] = update_posterior2(sub_data, ...
                                                     sub_hp_posteior,sub_extra_V, ...
-                                                    hp_prior, opts, 0, 10, 1);
+                                                    hp_prior, opts, 0, 10, 0);
   if size(sub_r,2) < 3
     continue
   end
@@ -307,7 +292,9 @@ end
 arg1_data = [new_data.kdtree(:).mean];
 dir = divide_by_principal_component(arg1_data, ...
                                 hp_posterior.B{c}, ...
-                                   hp_posterior.mu(:,c));
+                                   hp_posterior.h(c)*hp_posterior.mu(:,c));
+
+N=size(r,1);
 I = find(dir>=0);
 
 r_c1 = zeros(size(r,1),1);
@@ -322,17 +309,17 @@ new_c = size(new_r, 2) - 1;
 new_r(:,new_c) = r_c2;
 info.new_c = new_c;
 
-new_extra_V.kk_approx=ones(1,size(r,2)+1)*100;
+new_extra_V.kk_approx=ones(1,size(r,2)+1);
 new_extra_V.kk_approx(:,[1:end-2 end]) = extra_V.kk_approx;
 new_extra_V.kk_approx(:,c)=extra_V.kk_approx(c)*(length(I)/N);
 new_extra_V.kk_approx(:,new_c)=extra_V.kk_approx(c)*((N-length(I))/N);
 
-new_extra_V.kk=ones(1,size(r,2)+1)*100;
+new_extra_V.kk=ones(1,size(r,2)+1);
 new_extra_V.kk(:,[1:end-2 end]) = extra_V.kk;
 new_extra_V.kk(:,c)=extra_V.kk(c)*(length(I)/N);
 new_extra_V.kk(:,new_c)=extra_V.kk(c)*((N-length(I))/N);
 
-new_extra_V.ln_kk=ones(1,size(r,2)+1)*4;
+new_extra_V.ln_kk=ones(1,size(r,2)+1);
 new_extra_V.ln_kk(:,[1:end-2 end]) = extra_V.ln_kk;
 new_extra_V.ln_kk(:,c)=extra_V.ln_kk(c)*(length(I)/N);
 new_extra_V.ln_kk(:,new_c)=extra_V.ln_kk(c)*((N-length(I))/N);
@@ -372,7 +359,7 @@ disp(['### building kd-tree done; #partition ' num2str(length(data.kdtree)) ...
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 function [data, r] = expand_recursively_until_convergence(data, ...
                                                   r, hp_posterior, ...
-                                                  hp_prior, opts,extra_V);
+                                                  hp_prior, opts,extra_V)
 kdtree_size = length(data.kdtree);
 for a=1:length(data.kdtree)
   [data, r] = expand_recursively_until_convergence2(data, a, ...
@@ -464,11 +451,11 @@ while 1
   end
   % check if the last component is small enough
   
-  if isequal(opts.algorithm, 'vdp') & sum(r(:,end)) >1.0e-5
+  if isequal(opts.algorithm, 'vdp') & sum(r(:,end)) >1.0e-4
     r(:,end+1) = 0;
     extra_V.kk_approx(:,end+1) = 1;
     extra_V.kk(:,end+1)=1;
-    extra_V.ln_kk(:,end+1)=4; 
+    extra_V.ln_kk(:,end+1)=1; 
   end
   
   if start_sort
@@ -483,7 +470,7 @@ while 1
   end
 
   [hp_posterior,extra_V] = mk_hp_posterior(data, r, hp_prior, opts,extra_V);
-
+% t2=sum(extra_V.kk)
 end
 % disp_status(free_energy, hp_posterior, opts);
 disp(['### updating posterior ... done.'])
@@ -588,6 +575,52 @@ else
 end
 direction = sum((data - repmat(mean, 1, N)).*repmat(principal_component, 1, N), 1);
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+function [vec,value]=power_method(A, start, precision)
+
+switch nargin
+ case 1
+  start = ones(length(A),1);
+  precision = 1e-10;
+ case 2
+  precision = 1e-10;
+ case 3
+ otherwise
+  error 'invalid number of arguments'
+end
+
+%
+% xp = A^p * x
+% x(p+1) = lambda * xp   when p is big enough
+% lambda = x(p+1)'*xp / xp'*xp
+% 
+diff=precision+1;
+x=start;
+n=norm(x)+diff;
+i = 0;
+while diff> precision
+  i = i + 1;
+  y=A*x;
+  n2 = norm(x);
+  diff=abs(n2-n);
+  n=n2;
+  if n < 1.0e-200
+    x = zeros(length(A), 1);
+    break
+  else
+    x=y/n;
+  end
+  if i > 100
+    break
+  end
+end
+n = norm(x);
+if n < 1.0e-200
+  vec = zeros(length(A), 1);
+else
+  vec = x/n;
+end
+value=n;
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 function partition = mk_kdtree_partition(given_data, indices)
@@ -602,7 +635,7 @@ partition.sum_x = sum(data_a, 2); % D*1 按行求和
 mean = partition.sum_x / partition.N; % D*1
 partition.mean = mean; 
 partition.sum_xx = data_a*data_a'; % D*D
-%partition.sigma = partition.sum_xx / partition.N - mean*mean';
+% partition.sigma = partition.sum_xx / partition.N - mean*mean';
 partition.sigma = corr(data_a');
 partition.children = [];
 
@@ -646,16 +679,17 @@ for k=1:K
         term1(:,T)=Nt * Z_tk;
         term2(:,T)=[data.kdtree(T).mean]*Nt * Z_tk;%D*1
     end
-    hp_posterior.mu(:,k) = hp_prior.mu'*hp_prior.beta+sum(term2,2);%D*K
-    hp_posterior.beta(k) = sqrt(sum(power(hp_posterior.mu(:,k),2)));
-    hp_posterior.mu(:,k) = bsxfun(@rdivide,hp_posterior.mu(:,k), hp_posterior.beta(k));
 
+    hp_posterior.mu(:,k) = hp_prior.mu*hp_prior.beta+sum(term2,2)';%D*K
+    hp_posterior.beta(k) = norm(hp_posterior.mu(:,k),2);
+    hp_posterior.mu(:,k)=hp_posterior.mu(:,k)./hp_posterior.beta(k);
+    
     nu=D/2-1;
     bes_kk(k) = d_besseli(nu,extra_V.kk_approx(k));
     bes_bo(k) = d_besseli(nu,hp_prior.beta.*extra_V.kk_approx(k));
     bes_bk(k) = d_besseli_lower(nu,hp_posterior.beta(k).*extra_V.kk_approx(k));
 
-    hp_posterior.a(k)= hp_prior.a + sum(term1)*nu + hp_posterior.beta(k).*extra_V.kk_approx(k).*bes_bk(k);
+    hp_posterior.a(k)= hp_prior.a + sum(term1*nu) + hp_posterior.beta(k).*extra_V.kk_approx(k).*bes_bk(k);
     hp_posterior.b(k) = hp_prior.b + sum(term1)*bes_kk(k)+hp_prior.beta.*bes_bo(k); 
 
     assert(min(hp_posterior.a)>0);
@@ -676,21 +710,17 @@ hp_posterior.gamma(2,:) = hp_prior.alpha + sum(true_Nc) - cumsum(true_Nc,2);
 hp_posterior.Nc = Nc; 
 hp_posterior.true_Nc = true_Nc;
 hp_posterior.r = r; 
-% t4=hp_posterior.beta.*extra_V.kk_approx.*bes_bk
-% vmf的方差
-t1 = reshape([data.kdtree(:).sum_xx],D,D,N);
-sum_x = repmat(reshape([data.kdtree(:).sum_x],D,1,N),[1,D,1]);
-Na_1 = repmat(reshape([data.kdtree(:).N],1,1,N),[D,D,1]);
 
-
+D = size(hp_posterior.mu, 1); 
+nu=D/2-1;
+% vmf的方差3
 for c=1:K
-    t2 = sum_x.*repmat(hp_posterior.mu(:,c)',[D,1,N]);
-    S1 = (t1 - 2*t2 )./Na_1+repmat(hp_posterior.mu(:,c)*hp_posterior.mu(:,c)',[1,1,N]);
-% S1= [data.kdtree(:).sum_x]-hp_posterior.mu(:,c);
-   S=S1/(Nc(:,c));
-     hp_posterior.B{c} = sum(S,3);
+    t1=besseli(nu+1, extra_V.kk(c))+exp(-700);
+    t2=besseli(nu, extra_V.kk(c))+exp(-700);
+    h(c)=t1/t2;
+    hp_posterior.B{c}=h(c)/extra_V.kk(c)+((1-2*((nu+1)/extra_V.kk(c))*h(c)-h(c)*h(c)))*hp_posterior.mu(:,c)*hp_posterior.mu(:,c)';
 end
-
+hp_posterior.h=h;
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 function fc = mk_E_log_q_p_eta(data, hp_posterior, hp_prior, opts,extra_V);
@@ -698,12 +728,12 @@ function fc = mk_E_log_q_p_eta(data, hp_posterior, hp_prior, opts,extra_V);
 % fc : 1 by K
 D = size(hp_posterior.mu, 1);
 K = size(hp_posterior.r, 2);
-
+ 
 nu=D/2-1;
 m_o=repmat(hp_prior.mu,K,1)';
 E_m1 =nu*log(hp_posterior.beta./hp_prior.beta)-hp_posterior.beta+ hp_prior.beta+1000;
 E_m2 =hp_posterior.beta.*extra_V.kk-hp_prior.beta.*extra_V.kk.*sum(m_o.*hp_posterior.mu);
-t1=hp_posterior.beta.*extra_V.kk;    %fc被它牵着鼻子
+% t1=sum(hp_posterior.beta.*extra_V.kk)    %fc被它牵着鼻子
 
 E_m_H_m = E_m1+E_m2;
 E_k_H_k1= hp_posterior.a.*log(hp_posterior.b)-gammaln(hp_posterior.a)+(hp_posterior.a-1).*extra_V.ln_kk-hp_posterior.b.*extra_V.kk;
@@ -711,14 +741,12 @@ E_k_H_k2 = hp_prior.a.*log(hp_prior.b)-gammaln(hp_prior.a)+(hp_prior.a-1).*extra
 E_k_H_k = E_k_H_k1-E_k_H_k2;
 fc = E_m_H_m+E_k_H_k;
 
-debug
+
 if length(find(E_m_H_m<-1.0e-8,1)) > 0
-  E_m_H_m
-  error('E_log_q_p_mean is negative.')
+ return
 end
 if length(find(E_k_H_k<-1.0e-8,1)) > 0
-  E_k_H_k
-  error('E_log_q_p_mean is negative.')
+   return
 end
 
 
@@ -743,8 +771,6 @@ E_log_p_of_V = ...
      .*(psi(hp_posterior.gamma(2,:))-psi(sum(hp_posterior.gamma,1))));
 
 extra_term = sum(E_log_p_of_V);
-t1=[data.kdtree(:).N]*log_sum_exp(S_tk, 2);
-t2=sum(fc);
 free_energy = extra_term +sum(fc)- [data.kdtree(:).N]*log_sum_exp(S_tk, 2);
 
 
@@ -765,11 +791,11 @@ for k=1:K
     for T=1:N
        E_log_p_of_x(T,k) = approximatebound([data.kdtree(T).mean],hp_posterior.mu(:,k),extra_V.kk(k),extra_V.ln_kk(k),extra_V.kk_approx(k),hp_posterior.Nc(k));
     end
-    E_log_p_of_z_given_other_z_c = ...
-        psi(hp_posterior.gamma(1,k)) ...
-        - psi(sum(hp_posterior.gamma(:,k),1)) ...
-        + sum(psi(hp_posterior.gamma(2,[1:k-1])) - psi(sum(hp_posterior.gamma(:,[1:k-1]),1)), 2);
-    S_tk(:,k) = E_log_p_of_x(:,k) + E_log_p_of_z_given_other_z_c;
+    E_log_p_of_z_given_other_z_c(k) = ...
+            psi(hp_posterior.gamma(1,k)) ...
+            - psi(sum(hp_posterior.gamma(:,k),1)) ...
+            + sum(psi(hp_posterior.gamma(2,[1:k-1])) - psi(sum(hp_posterior.gamma(:,[1:k-1]),1)), 2);
+    S_tk(:,k) = E_log_p_of_x(:,k) + E_log_p_of_z_given_other_z_c(k);
 end
 S_tk(:,end) = S_tk(:,end) - log(1- exp(psi(hp_prior.alpha) - psi(1+hp_prior.alpha)));
 
@@ -806,8 +832,9 @@ lcpt=permute(lcpt,[dimension,the_other_dimension]);
 function hp_prior = mk_hp_prior(data, opts)
 
 if ~isfield(opts, 'mu')
-    hp_prior.mu=sum(data.given_data')/norm(sum(data.given_data'));
-    %prior.mu=sum(data)/norm(sum(data));
+    x=[data.kdtree(:).mean]';
+    hp_prior.mu=sum(x)/norm(sum(x));
+%     hp_prior.mu=sum(data.given_data')/norm(sum(data.given_data'));
 else 
   hp_prior.mu= 0.01;
 end
@@ -815,12 +842,12 @@ end
 if isfield(opts, 'alpha')
   hp_prior.alpha = opts.alpha;
 else
-  hp_prior.alpha = 1;
+  hp_prior.alpha = 0.11;
 end
 
-hp_prior.beta=1; 
-hp_prior.a=1; % assume unconcentrated data
-hp_prior.b=0.01; % but do not trust that too much
+hp_prior.beta=0.05; 
+hp_prior.a=0.1; % assume unconcentrated data
+hp_prior.b=0.1; % but do not trust that too much
 
 
 
